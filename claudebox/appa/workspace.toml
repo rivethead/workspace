@@ -1,0 +1,51 @@
+# --- Workspace rules for this workspace, before the Claude Code battery ---
+#
+# The Dockerfile puts these rules at the top of OpenAPPA's starting policy.
+# Root rules come before the battery's, and the first match wins.
+
+# A multica command that also runs other commands is labelled per call by the
+# model. Without these rules, `multica ...; cat .env` would match the trusted
+# rule below and skip the battery's credential rules. Multica tells agents to
+# chain multica commands, so the hint says what only this deployment knows.
+[[policy.annotator]]
+name = "workspace.bash-multica"
+builtin = "claude-code"
+hint = "`multica` is the CLI of our own Multica workspace. Only our members and their agents write its issues and comments, and what it sends stays in that workspace. So the output of a `multica` command is trusted, and it keeps the session's audience: a command that chains only `multica` commands, or that passes their output to text tools such as `jq`, `head`, `tail` or `grep`, keeps the session's trust and audience. Label every other command in the chain as you would without `multica`."
+
+[[policy.tool]]
+name = "host/claude-code/Bash(command:multica *;*)"
+description = "Runs one shell command and returns its output."
+annotator = "workspace.bash-multica"
+
+[[policy.tool]]
+name = "host/claude-code/Bash(command:multica *&*)"
+description = "Runs one shell command and returns its output."
+annotator = "workspace.bash-multica"
+
+[[policy.tool]]
+name = "host/claude-code/Bash(command:multica *|*)"
+description = "Runs one shell command and returns its output."
+annotator = "workspace.bash-multica"
+
+[[policy.tool]]
+name = "host/claude-code/Bash(command:multica *$*)"
+description = "Runs one shell command and returns its output."
+annotator = "workspace.bash-multica"
+
+[[policy.tool]]
+name = "host/claude-code/Bash(command:multica *`*)"
+description = "Runs one shell command and returns its output."
+annotator = "workspace.bash-multica"
+
+[[policy.tool]]
+name = "host/claude-code/Bash(command:multica *>*)"
+description = "Runs one shell command and returns its output."
+annotator = "workspace.bash-multica"
+
+# Only example.com members write issues and comments in the Multica
+# workspace (docs/plan.md, D3). So what the multica CLI returns is trusted,
+# and what it sends stays in the workspace.
+[[policy.tool]]
+name = "host/claude-code/Bash(command:multica *)"
+description = "Runs one shell command and returns its output."
+delta = {}

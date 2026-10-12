@@ -1,0 +1,17 @@
+services:
+  claudebox:
+    image: ghcr.io/armanjr/claudebox:latest
+    build:
+      context: .
+      dockerfile: Dockerfile
+    cap_add:
+      - NET_ADMIN
+    ports:
+      - "${CLAUDEBOX_PORT:-3000}:3000"
+    env_file:
+      - path: .env.claude
+        required: false
+    volumes:
+      - ${CLAUDE_CONFIG_DIR:-~/.claude}/.credentials.json:/run/claude-credentials:ro
+      - ./context:/workspace/context:ro
+      - ./allowed-domains.txt:/etc/allowed-domains.txt:ro

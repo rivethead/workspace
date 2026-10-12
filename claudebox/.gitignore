@@ -1,0 +1,39 @@
+# Secrets and local settings. .env.example is the committed template.
+.env
+.env.*
+!.env.example
+
+# Key material, in case an SVID or key is ever copied out of a container
+*.pem
+*.key
+*.crt
+*.p12
+
+# Local compose overrides
+docker-compose.override.yml
+compose.override.yml
+
+# Claude Code per-user settings (shared .claude/settings.json is fine to commit)
+.claude/settings.local.json
+.claude/worktrees/
+
+# Dependencies and build output
+node_modules/
+__pycache__/
+*.pyc
+.venv/
+
+# Logs
+*.log
+
+# OS files
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Editors
+.idea/
+.vscode/*
+!.vscode/extensions.json
+*.swp
+*~

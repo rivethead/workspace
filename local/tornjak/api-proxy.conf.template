@@ -1,0 +1,24 @@
+# Tornjak's API, read-only (docs/threat-model.md, TM-T6). The backend can create
+# and delete every registration entry, has no sign-in, and answers every web
+# page (Access-Control-Allow-Origin: *). This proxy is the only way to it: it
+# lets only reads through, and only the Tornjak UI's page may read the answers.
+# The scripts make the entries; in the cloud, the provisioner does (D37).
+server {
+    listen 10000;
+
+    location / {
+        if ($request_method !~ ^(GET|HEAD|OPTIONS)$) {
+            return 403 "Tornjak is read-only here: the scripts make the registration entries\n";
+        }
+        proxy_pass http://tornjak-backend:10000;
+        proxy_hide_header Access-Control-Allow-Origin;
+        proxy_hide_header Access-Control-Allow-Methods;
+        proxy_hide_header Access-Control-Allow-Headers;
+        proxy_hide_header Access-Control-Allow-Credentials;
+        proxy_hide_header Access-Control-Expose-Headers;
+        add_header Access-Control-Allow-Origin "${TORNJAK_UI_ORIGIN}" always;
+        add_header Access-Control-Allow-Methods "GET, HEAD, OPTIONS" always;
+        add_header Access-Control-Allow-Headers "Content-Type" always;
+        add_header Vary "Origin" always;
+    }
+}

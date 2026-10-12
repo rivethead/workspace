@@ -1,0 +1,115 @@
+# prd.yaml — PHASE 0. Input documents → the PRD (artifact #1, must be 100%).
+# Runs BEFORE planning.yaml; the approved PRD is planning's input.
+#
+# Authoring model (2026-08-11): the analyst frames a skeleton, then the workflow
+# FANS OUT one child ticket per section lens (architect/security/compliance) so
+# each agent owns its own ticket; the analyst FANS IN and assembles once all
+# section children are done. Gate: the advocate's FULL red-team, then MANDATORY
+# human sign-off. Roles resolve via roles.yaml. Delimiter '-'.
+
+type: prd
+owner: staged-parent               # MUST have an assignee or the barrier fires into the void
+description: >
+  Turns a collection of input documents into the PRD. The single most important
+  artifact in the whole process — nothing downstream is more expensive to get
+  wrong, so this workflow is deliberately heavy on contribution + adversarial
+  review + human approval.
+
+entry_criteria:
+  - inputs_present            # documents added to docs/inputs/ (see docs/inputs/README.md)
+
+artifacts:
+  - prd                       # docs/prd/<name>.md (repo doc = source of truth; a Multica issue tracks the work)
+  - wiki_prd_summary          # docs/wiki/ update from the approved PRD (see prd-document stage below)
+
+# SHARED BRANCH + SECTION FILES. Every stage — and every fan-out CHILD — works on
+# ONE branch, recorded as the parent ticket's `prd_branch` metadata (set once by
+# prd-lead, inherited by the children and reused by every later stage). The
+# section lenses do NOT append comments to a shared ticket; each writes its own
+# file, so the fan-in is a branch read, not ticket-scraping:
+#   docs/prd/<name>.md            — the assembled PRD (skeleton by prd-lead, composed by prd-assemble)
+#   docs/prd/sections/technical.md
+#   docs/prd/sections/security.md
+#   docs/prd/sections/compliance.md
+# One branch → one eventual PR.
+
+stages:
+  # 1. Kick off: analyst frames the PRD skeleton from the inputs and writes the
+  #    empty section-file stubs on the shared branch.
+  - id: prd-lead
+    role: analyst              # analyst / Analysis — grill-with-docs over the inputs
+    produces: prd_skeleton
+    gate: { artifact_present: prd_skeleton }
+
+  # 2. Fan out — one CHILD TICKET per section lens, in parallel. The orchestrator
+  #    creates each child as a child of this PRD ticket, assigns it to the lens's
+  #    squad, and seeds it with the section id + the shared `prd_branch`. Each
+  #    child is a plain task: write ONLY docs/prd/sections/<section>.md, then
+  #    close. Separate tickets = independent needs-info loops, status and retry
+  #    per lens. `children_complete` advances only when all of them are done.
+  - id: prd-sections
+    role: analyst              # parent owner; escalation target for the fan-out group
+    mode: fan-out
+    fan_out:
+      - { section: technical,  role: architect,   produces: prd_section_technical }
+      - { section: security,   role: security,     produces: prd_section_security }
+      - { section: compliance, role: compliance,   produces: prd_section_compliance }
+    gate: { children_complete: prd-sections }
+
+  # 3. Assemble — analyst reads the three section files off the shared branch and
+  #    weaves them into one coherent, consistent PRD draft (docs/prd/<name>.md).
+  - id: prd-assemble
+    role: analyst
+    produces: prd_draft
+    gate: { artifact_present: prd_draft }
+
+  # 4. Red-team — advocate's FULL parallel red-team (NOT the lightweight pass). 100% bar.
+  - id: prd-challenge
+    role: advocate             # advocate / Red Team — full parallel red-team of the PRD
+    produces: prd_challenge_findings
+    gate: { artifact_present: prd_challenge_findings }
+    mode: full-red-team        # explicit: multiple adversarial lenses, synthesized + ranked
+
+  # 5. Revise — analyst resolves every finding (reopening a section child if a
+  #    finding is a lens's to fix). Advances when all findings are resolved.
+  - id: prd-revise
+    role: analyst
+    produces: prd_revised
+    gate: { predicate: all_challenge_findings_resolved }
+
+  # 6. Human sign-off — MANDATORY. A real dropdown property (Pending/Approved/
+  #    Changes Requested), not comment-text parsing. `default` seeds "Pending"
+  #    the first time the stage is reached so the property is actually attached.
+  - id: prd-approve
+    role: human
+    gate: { property: "PRD Approval", equals: "Approved", default: "Pending" }
+
+  # 7. Librarian — ingest the NOW-APPROVED PRD into docs/wiki/ (living docs), not
+  #    the pre-approval draft. See instructions/librarian.md.
+  - id: prd-document
+    role: librarian            # librarian / Documentation — to-wiki
+    produces: wiki_prd_summary
+    gate: { artifact_present: wiki_prd_summary }
+
+  - id: prd-wiki-approve
+    role: human
+    gate: { property: "PRD Wiki Approval", equals: "Approved", default: "Pending" }
+
+escalation: { timeout_stage: 60m, notify: human }   # thinking-heavy phase, not throughput-bound
+
+# Once prd-approve is satisfied, the workflow chains the SAME parent ticket
+# straight into planning.yaml's first stage (flip Workflow Type to "planning",
+# reset Workflow Stage to "spec") — no separate planning ticket by hand.
+next: planning
+
+# --- New vocabulary this workflow introduces (for the orchestrator) ----------
+# mode: fan-out       — instead of dispatching the stage to one squad, create
+#                       one child ticket per `fan_out` entry (child of this
+#                       ticket, assigned to entry.role's squad, seeded with
+#                       `section` + inherited `prd_branch`). The stage's own
+#                       `role` is the group's owner/escalation target only.
+# gate: children_complete: <stage-id>
+#                     — satisfied when every child created by that fan-out stage
+#                       is done/cancelled. (Sibling of planning's
+#                       `predicate: tickets_created`, but waits for COMPLETION,
+#                       not just creation.)

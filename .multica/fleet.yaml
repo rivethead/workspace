@@ -1,0 +1,33 @@
+# Project onboarding config. Extends the org baseline (defaults@v1); everything
+# below is a thin override. Apply it in two phases:
+#   onboard apply    # workspace + labels + properties + skills
+#   onboard agents   # agents + squads (after Claude Code runtimes are registered)
+extends: example-org/defaults@v1
+
+workspace:
+  name: "Multica Orchestrator"
+  slug: multica-orchestrator
+  issue_prefix: MULT
+
+repo: example-org/workspace
+
+# Substring matched against the Claude Code runtimes registered on the instance.
+# Every agent role runs on Claude Code.
+runtimes:
+  claude: "claude"
+
+# --- Role overrides (optional; delete if unused) ----------------------------
+# `roles` is a map keyed by name: set fields override, enabled:false removes,
+# a new key adds. Applied by `onboard agents` (NOT `onboard apply`).
+# roles:
+#   advocate: { model: claude-opus-5 }        # change one agent's model
+#   compliance: { enabled: false }            # drop a default role
+#   security: { squad: "AppSec" }             # rename a squad
+#   perf-reviewer:                            # add a project role
+#     squad: Performance                      # (also create .multica/instructions/perf-reviewer.md)
+#     tier: claude
+#     model: claude-sonnet-5
+#     instructions: .multica/instructions/perf-reviewer.md
+#
+# NOTE: labels and the workflow custom properties are FIXED org defaults — not
+# project-configurable — so there is no block for them here.

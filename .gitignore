@@ -1,0 +1,6 @@
+.DS_Store
+
+# Working plan (per-task, never committed)
+IMPLEMENTATION_PLAN.md
+.ruff_cache/
+__pycache__/

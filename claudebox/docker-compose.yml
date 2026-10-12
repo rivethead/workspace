@@ -1,0 +1,156 @@
+# Fixed project name: volume names and the SPIFFE selectors (com.docker.compose.project)
+# depend on it, whatever folder this repo is cloned into.
+name: claudebox
+
+x-claudebox-base: &claudebox-base
+  image: claudebox
+  build:
+    context: .
+    args:
+      CLAUDE_CODE_VERSION: ${CLAUDE_CODE_VERSION:-latest}
+      MULTICA_VERSION: ${MULTICA_VERSION:-latest}
+      APPA_VERSION: ${APPA_VERSION:-v0.31.1}
+      SPIRE_VERSION: ${SPIRE_VERSION:-1.15.3}
+      # Linux/WSL: set to `id -u` / `id -g` so files Claude writes in /workspace stay yours.
+      UID: ${CLAUDEBOX_UID:-1000}
+      GID: ${CLAUDEBOX_GID:-1000}
+      TZ: ${TZ:-UTC}
+  working_dir: /workspace
+  environment: &claudebox-env
+    # Set in .env (see .env.example). Leave both empty to use the mounted host credentials.
+    CLAUDE_CODE_OAUTH_TOKEN: ${CLAUDE_CODE_OAUTH_TOKEN:-}
+    ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+    # 1 (default) = always pass --dangerously-skip-permissions; 0 = normal prompts
+    CLAUDEBOX_SKIP_PERMISSIONS: ${CLAUDEBOX_SKIP_PERMISSIONS:-1}
+    # 1 = copy host settings.json into the volume on first run; 0 (default) = skip
+    CLAUDEBOX_SEED_SETTINGS: ${CLAUDEBOX_SEED_SETTINGS:-0}
+  volumes:
+    - ${PROJECT_DIR:-.}:/workspace
+    - claudebox-config:/home/claude/.claude
+    # OpenAPPA policy, shared by every service. Each service keeps its own runtime data
+    # (event log db, deployed binary, clappa) so two runtimes never share one database.
+    - appa-config:/home/claude/.config/appa
+    - appa-data-cli:/home/claude/.local/share/appa
+    # SPIRE Workload API socket (spire-agent service). Absent until spire/bootstrap.sh runs.
+    - spire-agent-socket:/run/spire/sockets:ro
+    # Host Claude Code dir, mounted read-only. The entrypoint seeds the config volume
+    # from .credentials.json / settings.json on first run if they exist. The whole dir is
+    # mounted (not single files) so a missing file is never auto-created as a directory
+    # on the host; macOS keeps credentials in the Keychain, so there is no .credentials.json.
+    - ${HOST_CLAUDE_DIR:-~/.claude}:/run/host-claude:ro
+
+services:
+  # Interactive / one-shot Claude Code:  docker compose run --rm claudebox [args]
+  claudebox:
+    <<: *claudebox-base
+    stdin_open: true
+    tty: true
+
+  # OpenAI-compatible API server:  docker compose up -d claudebox-server
+  claudebox-server:
+    <<: *claudebox-base
+    # Reuses the image built by the claudebox service; building both in parallel races on the tag.
+    build: !reset null
+    command: ["server", "--openai"]
+    ports:
+      - "${CLAUDEBOX_PORT:-3210}:3000"
+    environment:
+      <<: *claudebox-env
+      # Optional bearer token required on /v1/* when set
+      CLAUDEBOX_API_KEY: ${CLAUDEBOX_API_KEY:-}
+      MAX_CONCURRENT: ${MAX_CONCURRENT:-4}
+      # Optional: limit Claude's built-in tools for /v1 requests, e.g. "Read,Grep" or "" for none
+      CLAUDEBOX_BUILTIN_TOOLS: ${CLAUDEBOX_BUILTIN_TOOLS:-}
+    volumes:
+      - ${PROJECT_DIR:-.}:/workspace
+      - claudebox-config:/home/claude/.claude
+      - ${HOST_CLAUDE_DIR:-~/.claude}:/run/host-claude:ro
+      - appa-config:/home/claude/.config/appa
+      - appa-data-server:/home/claude/.local/share/appa
+      - spire-agent-socket:/run/spire/sockets:ro
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:3000/health || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+  # Optional. Multica agent-runtime daemon running inside the box:
+  #   docker compose up -d multica-daemon      (needs MULTICA_TOKEN in .env)
+  # It registers the container's `claude` as a runtime, so Multica tasks run sandboxed here.
+  # The profile keeps it out of plain `docker compose up`.
+  multica-daemon:
+    <<: *claudebox-base
+    build: !reset null
+    profiles: ["multica"]
+    command: ["multica", "daemon", "start", "--foreground"]
+    environment:
+      <<: *claudebox-env
+      MULTICA_SERVER_URL: ${MULTICA_SERVER_URL:-http://host.docker.internal:8080}
+      MULTICA_APP_URL: ${MULTICA_APP_URL:-http://host.docker.internal:3000}
+      MULTICA_TOKEN: ${MULTICA_TOKEN:-}
+      MULTICA_WORKSPACE_ID: ${MULTICA_WORKSPACE_ID:-}
+      MULTICA_DAEMON_ID: ${MULTICA_DAEMON_ID:-claudebox}
+      MULTICA_DAEMON_DEVICE_NAME: ${MULTICA_DAEMON_DEVICE_NAME:-claudebox}
+      MULTICA_DAEMON_MAX_CONCURRENT_TASKS: ${MULTICA_DAEMON_MAX_CONCURRENT_TASKS:-4}
+      MULTICA_WORKSPACES_ROOT: /home/claude/multica-workspaces
+      # The binary is baked into the image; rebuild with MULTICA_VERSION to upgrade.
+      MULTICA_DAEMON_AUTO_UPDATE: "false"
+      MULTICA_DAEMON_AUTO_RELOAD: "false"
+    volumes:
+      - claudebox-config:/home/claude/.claude
+      - ${HOST_CLAUDE_DIR:-~/.claude}:/run/host-claude:ro
+      - multica-state:/home/claude/.multica
+      - multica-workspaces:/home/claude/multica-workspaces
+      - appa-config:/home/claude/.config/appa
+      - appa-data-daemon:/home/claude/.local/share/appa
+      - spire-agent-socket:/run/spire/sockets:ro
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    restart: unless-stopped
+
+  # --- SPIFFE / SPIRE (local trust domain claudebox.local). First run: ./spire/bootstrap.sh
+  spire-server:
+    image: ghcr.io/spiffe/spire-server:${SPIRE_VERSION:-1.15.3}
+    command: ["-config", "/opt/spire/conf/server/server.conf"]
+    # The image has no data dir for its uid 1000; a fresh named volume is root-owned.
+    user: "0:0"
+    volumes:
+      - ./spire/server.conf:/opt/spire/conf/server/server.conf:ro
+      - spire-server-data:/opt/spire/data/server
+    healthcheck:
+      test: ["CMD", "/opt/spire/bin/spire-server", "healthcheck"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+    restart: unless-stopped
+
+  # Hands SVIDs to claudebox containers over /run/spire/sockets/agent.sock. The docker
+  # workload attestor needs the Docker socket and the host pid namespace to map a caller's
+  # pid to its container and read that container's compose labels.
+  spire-agent:
+    image: ghcr.io/spiffe/spire-agent:${SPIRE_VERSION:-1.15.3}
+    command: ["-config", "/opt/spire/conf/agent/agent.conf", "-joinToken", "${SPIRE_JOIN_TOKEN:-}"]
+    pid: host
+    depends_on:
+      spire-server:
+        condition: service_healthy
+    volumes:
+      - ./spire/agent.conf:/opt/spire/conf/agent/agent.conf:ro
+      - spire-agent-data:/opt/spire/data/agent
+      - spire-agent-socket:/run/spire/sockets
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    restart: unless-stopped
+
+volumes:
+  claudebox-config:
+  appa-config:
+  appa-data-cli:
+  appa-data-server:
+  appa-data-daemon:
+  spire-server-data:
+  spire-agent-data:
+  spire-agent-socket:
+  multica-state:
+  multica-workspaces:

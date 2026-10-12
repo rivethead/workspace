@@ -1,0 +1,36 @@
+# SPIRE agent on the laptop __CN__. It proves itself to the workspace server
+# with its machine certificate (x509pop) and trusts only the server's bundle.
+agent {
+    data_dir = "/opt/spire/data/agent"
+    log_level = "INFO"
+    server_address = "spire-server"
+    server_port = "8081"
+    socket_path = "/run/spire/sockets/agent.sock"
+    trust_domain = "workspace.local"
+    trust_bundle_path = "/opt/spire/conf/agent/bundle.pem"
+}
+
+plugins {
+    NodeAttestor "x509pop" {
+        plugin_data {
+            private_key_path = "/opt/spire/conf/agent/agent.key"
+            certificate_path = "/opt/spire/conf/agent/agent.pem"
+        }
+    }
+    KeyManager "disk" {
+        plugin_data {
+            directory = "/opt/spire/data/agent"
+        }
+    }
+    WorkloadAttestor "docker" {
+        plugin_data {}
+    }
+}
+
+health_checks {
+    listener_enabled = true
+    bind_address = "0.0.0.0"
+    bind_port = "8080"
+    live_path = "/live"
+    ready_path = "/ready"
+}

@@ -1,0 +1,9 @@
+#!/usr/bin/env bash
+# Run ClaudeBox (Claude Code + OpenAPPA, sandboxed) on the current folder.
+#   claudebox                      interactive session
+#   claudebox -p "summarise this"  one-shot
+#   claudebox bash                 shell inside the box
+set -euo pipefail
+here="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}" 2>/dev/null || echo "${BASH_SOURCE[0]}")")/.." && pwd)"
+PROJECT_DIR="$PWD" exec docker compose --project-directory "$here" -f "$here/docker-compose.yml" \
+    run --rm claudebox "$@"

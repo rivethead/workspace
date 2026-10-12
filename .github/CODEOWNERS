@@ -1,0 +1,13 @@
+# Who reviews a pull request here. Agents work in this repo, but a person
+# approves every merge (an agent's approval never counts here), so every
+# change gets an owner's review.
+*                   @example-owner
+
+# Paths that grant access or set the limits agents work within: CI, the agent
+# configuration, the agent runtime and the credential broker.
+/.github/              @example-owner
+/.claude/              @example-owner
+/.multica/             @example-owner
+/claudebox/            @example-owner
+/broker/               @example-owner
+/orchestrator/         @example-owner

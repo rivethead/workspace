@@ -1,0 +1,55 @@
+# change.yaml: one change, from code to a person's approval.
+#
+# A person starts it by setting the ticket's `workflow` metadata to `change`.
+# An implementer writes the change, a reviewer agent reviews it, and a person
+# decides. The engine only moves the ticket; the agents do the work.
+
+schema: workflow/v1
+workflow: change
+description: An agent writes a change, another agent reviews it, and a person approves it.
+initial: implement
+
+states:
+  implement:
+    kind: agent
+    role: implementer
+    task: >
+      Make the change that ticket {ticket} describes, on a branch named
+      change/{ticket}, and open a pull request. Report "done" when the pull
+      request is open, or "failed" with a reason if you cannot do it.
+    on:
+      done: review
+      failed: stuck
+
+  review:
+    kind: agent
+    role: reviewer
+    task: >
+      Review the pull request of ticket {ticket} against the ticket. Report
+      "approved", or "changes_requested" with what to change in your comment.
+    on:
+      approved: approve
+      changes_requested: implement
+      failed: stuck
+
+  approve:
+    kind: human
+    description: The pull request is reviewed. Merge it and move the ticket to done, or move it to todo to send it back.
+    on:
+      done: merged
+      todo: implement
+      cancelled: abandoned
+
+  stuck:
+    kind: human
+    description: An agent could not finish. Read its last comment, then move the ticket to todo to try again, or cancel it.
+    on:
+      todo: implement
+      cancelled: abandoned
+
+  merged:
+    kind: final
+
+  abandoned:
+    kind: final
+    status: cancelled

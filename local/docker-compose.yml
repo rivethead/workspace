@@ -1,0 +1,225 @@
+# The workspace on one machine: local stand-ins for the cloud services in
+# docs/plan.md. Every port binds to 127.0.0.1 only. Start with scripts/up.sh.
+#
+# Two networks. `workspace-local` is the private side (the private network's private
+# subnets): Postgres, Mailpit, the credential service and SPIRE's key server.
+# `workspace-edge` holds only what laptops may reach (the public load
+# balancers): the broker, the Multica API and the SPIRE server. Laptops and
+# agent runs join only the edge network.
+name: workspace-local
+
+services:
+  # Managed PostgreSQL: one Postgres 17 with the multica, spire and assignments databases.
+  postgres:
+    image: pgvector/pgvector:pg17
+    environment:
+      POSTGRES_DB: multica
+      POSTGRES_USER: workspace
+      POSTGRES_PASSWORD: workspace
+    ports:
+      - "127.0.0.1:${POSTGRES_PORT:-55432}:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./postgres/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U workspace -d multica"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+  # Email service: Mailpit catches Multica's sign-in codes. UI at http://localhost:8025.
+  mailpit:
+    image: axllent/mailpit:${MAILPIT_VERSION:-v1.31.2}
+    ports:
+      - "127.0.0.1:${MAILPIT_PORT:-8025}:8025"
+    restart: unless-stopped
+
+  multica-api:
+    image: ghcr.io/multica-ai/multica-backend:${MULTICA_VERSION:-v0.6.1}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:${MULTICA_API_PORT:-8080}:8080"
+    volumes:
+      - multica-uploads:/app/data/uploads
+    environment:
+      DATABASE_URL: postgres://workspace:workspace@postgres:5432/multica?sslmode=disable
+      PORT: "8080"
+      APP_ENV: production
+      JWT_SECRET: ${JWT_SECRET:?run scripts/up.sh, which creates .env}
+      FRONTEND_ORIGIN: http://localhost:${MULTICA_WEB_PORT:-3000}
+      MULTICA_APP_URL: http://localhost:${MULTICA_WEB_PORT:-3000}
+      # Daemons on the laptops reach the API on the edge network.
+      MULTICA_DAEMON_SERVER_URL: http://multica-api:8080
+      SMTP_HOST: mailpit
+      SMTP_PORT: "1025"
+      SMTP_FROM_EMAIL: noreply@workspace.local
+      # Plan D3/D4: only people of the organisation. Invitations bypass this list.
+      ALLOW_SIGNUP: "true"
+      ALLOWED_EMAIL_DOMAINS: ${ALLOWED_EMAIL_DOMAINS:-example.com}
+      DISABLE_WORKSPACE_CREATION: "false"
+      DO_NOT_TRACK: "1"
+    networks: [default, edge]
+    restart: unless-stopped
+
+  multica-web:
+    image: ghcr.io/multica-ai/multica-web:${MULTICA_VERSION:-v0.6.1}
+    depends_on:
+      - multica-api
+    ports:
+      - "127.0.0.1:${MULTICA_WEB_PORT:-3000}:3000"
+    environment:
+      HOSTNAME: "0.0.0.0"
+      REMOTE_API_URL: http://multica-api:8080
+    restart: unless-stopped
+
+  # SPIRE server: laptops' SPIRE agents connect on 8081 (the public TCP load balancer in the cloud).
+  spire-server:
+    image: ghcr.io/spiffe/spire-server:${SPIRE_VERSION:-1.15.3}
+    command: ["-config", "/opt/spire/conf/server/server.conf"]
+    user: "0:0"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:${SPIRE_PORT:-8081}:8081"
+    volumes:
+      - ./spire/server.conf:/opt/spire/conf/server/server.conf:ro
+      - ./.state/node-ca/ca.pem:/opt/spire/conf/node-ca/ca.pem:ro
+      - spire-server-data:/opt/spire/data/server
+      - spire-server-socket:/tmp/spire-server/private
+    healthcheck:
+      test: ["CMD", "/opt/spire/bin/spire-server", "healthcheck"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+    networks: [default, edge]
+    restart: unless-stopped
+
+  # Publishes SPIRE's JWT-SVID signing keys at http://spire-oidc:8008/keys.
+  spire-oidc:
+    image: ghcr.io/spiffe/oidc-discovery-provider:${SPIRE_VERSION:-1.15.3}
+    command: ["-config", "/opt/spire/conf/oidc/oidc.conf"]
+    user: "0:0"
+    depends_on:
+      spire-server:
+        condition: service_healthy
+    volumes:
+      - ./spire/oidc.conf:/opt/spire/conf/oidc/oidc.conf:ro
+      - spire-server-socket:/tmp/spire-server/private
+    restart: unless-stopped
+
+  # Tornjak: a web view of the SPIRE server (agents, entries, SVIDs), at
+  # http://localhost:3001. The backend uses the server's admin socket, so it can
+  # change every identity, and it has no sign-in and accepts calls from any web
+  # page (CORS *). So it has no port: tornjak-api is the only way to it, and
+  # lets only reads through (docs/threat-model.md, TM-T6).
+  tornjak-backend:
+    image: ghcr.io/spiffe/tornjak-backend:${TORNJAK_VERSION:-v2.1.0}
+    command: ["--spire-config", "/opt/spire/conf/server/server.conf", "--tornjak-config", "/opt/tornjak/conf/tornjak.conf"]
+    depends_on:
+      spire-server:
+        condition: service_healthy
+    volumes:
+      - ./tornjak/tornjak.conf:/opt/tornjak/conf/tornjak.conf:ro
+      - ./spire/server.conf:/opt/spire/conf/server/server.conf:ro
+      - spire-server-socket:/tmp/spire-server/private
+      - tornjak-data:/var/lib/tornjak
+    restart: unless-stopped
+
+  # Tornjak's API on the host, read-only: GET only, and only the Tornjak UI's
+  # page may read the answers.
+  tornjak-api:
+    image: nginx:${NGINX_VERSION:-1.27.5-alpine}
+    depends_on:
+      - tornjak-backend
+    environment:
+      TORNJAK_UI_ORIGIN: http://localhost:${TORNJAK_PORT:-3001}
+    ports:
+      - "127.0.0.1:${TORNJAK_API_PORT:-10000}:10000"
+    volumes:
+      - ./tornjak/api-proxy.conf.template:/etc/nginx/templates/default.conf.template:ro
+    restart: unless-stopped
+
+  tornjak-frontend:
+    image: ghcr.io/spiffe/tornjak-frontend:${TORNJAK_VERSION:-v2.1.0}
+    depends_on:
+      - tornjak-api
+    ports:
+      - "127.0.0.1:${TORNJAK_PORT:-3001}:3000"
+    environment:
+      REACT_APP_API_SERVER_URI: http://localhost:${TORNJAK_API_PORT:-10000}/
+      REACT_APP_SPIRE_HEALTH_CHECK_ENABLE: "true"
+    restart: unless-stopped
+
+  # Our credential service (broker/): stop switch, launcher check, GitHub tokens.
+  credential-service:
+    build: ../broker
+    image: workspace/credential-service:local
+    depends_on:
+      postgres:
+        condition: service_healthy
+      spire-oidc:
+        condition: service_started
+    environment:
+      BROKER_JWKS_URL: http://spire-oidc:8008/keys
+      BROKER_TRUST_DOMAIN: workspace.local
+      BROKER_RULES: /rules/rules.json
+      BROKER_DATABASE_URL: postgres://workspace:workspace@postgres:5432/broker?sslmode=disable
+    volumes:
+      # The provisioner publishes the rules here (object storage in the cloud).
+      - ./.state/broker:/rules:ro
+      # Agents' GitHub App keys (KMS in the cloud).
+      - ./.state/github:/state/github:ro
+    restart: unless-stopped
+
+  # The broker's front door. Laptops reach it as http://broker:8443.
+  broker:
+    image: ghcr.io/agentgateway/agentgateway:${AGENTGATEWAY_VERSION:-v1.5.0}
+    command: ["-f", "/config/config.yaml"]
+    depends_on:
+      credential-service:
+        condition: service_started
+      broker-admin:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:${BROKER_PORT:-8443}:8443"
+    volumes:
+      - ./agentgateway/config.yaml:/config/config.yaml:ro
+      - broker-admin-socket:/run/broker-admin
+    networks: [default, edge]
+    restart: unless-stopped
+
+  # The broker's admin UI on the host: http://localhost:15000/ui. The broker
+  # is on the edge network with the laptops, so its admin interface is a Unix
+  # socket, and this forwarder is on the private network only. Read-only, but
+  # it has no sign-in: anything on this computer can read the broker's config.
+  broker-admin:
+    image: alpine/socat:${SOCAT_VERSION:-1.8.0.3}
+    # First give the socket folder to the broker's user (65532), then forward.
+    entrypoint: ["sh", "-c", "chown 65532:65532 /run/broker-admin && exec socat TCP-LISTEN:15000,fork,reuseaddr UNIX-CONNECT:/run/broker-admin/admin.sock"]
+    healthcheck:
+      test: ["CMD-SHELL", "[ \"$$(stat -c %u /run/broker-admin)\" = 65532 ]"]
+      interval: 2s
+      retries: 15
+    ports:
+      - "127.0.0.1:${BROKER_ADMIN_PORT:-15000}:15000"
+    volumes:
+      - broker-admin-socket:/run/broker-admin
+    restart: unless-stopped
+
+networks:
+  default:
+    name: workspace-local
+  edge:
+    name: workspace-edge
+
+volumes:
+  pgdata:
+  multica-uploads:
+  spire-server-data:
+  spire-server-socket:
+  tornjak-data:
+  broker-admin-socket:

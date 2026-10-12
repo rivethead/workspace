@@ -1,0 +1,39 @@
+# yaml-language-server: $schema=https://agentgateway.dev/schema/config
+# The credential broker's front door (ARCHITECTURE.md 5.4). It checks every
+# caller's JWT-SVID against SPIRE's keys, then forwards to our credential
+# service, which checks the token again with its own audience (D42) - so the
+# token is preserved, not stripped.
+# The admin interface and its UI (http://localhost:15000/ui) listen on a Unix
+# socket, so no network reaches them; broker-admin publishes the socket on the
+# host only. The UI is read-only: change this file, not the UI.
+config:
+  adminAddr: unix:/run/broker-admin/admin.sock
+  storage:
+    mode: readOnly
+binds:
+- port: 8443
+  listeners:
+  - name: broker
+    protocol: HTTP
+    routes:
+    - name: credential-service
+      matches:
+      - path:
+          pathPrefix: /v1/
+      backends:
+      - host: credential-service:8090
+      policies:
+        jwtAuth:
+          mode: strict
+          preserveToken: true
+          issuer: http://spire-oidc:8008
+          audiences: [broker]
+          jwks:
+            url: http://spire-oidc:8008/keys
+    # The credential service's own health: 503 while its rules or stop switch fail.
+    - name: health
+      matches:
+      - path:
+          exact: /healthz
+      backends:
+      - host: credential-service:8090

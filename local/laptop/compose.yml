@@ -1,0 +1,86 @@
+# One sponsor's laptop, simulated on this machine: ClaudeBox's compose file with
+# this override (scripts/laptop.sh). The laptop's SPIRE agent attests to the
+# workspace SPIRE server with its machine certificate (x509pop), and its Multica
+# daemon signs in as the laptop's runner account. Paths come from LAPTOP_DIR
+# because Compose resolves relative paths against claudebox/.
+
+services:
+  # The workspace runs the SPIRE server; a laptop has only an agent.
+  spire-server:
+    profiles: ["not-on-a-laptop"]
+
+  spire-agent:
+    depends_on: !reset {}
+    command: ["-config", "/opt/spire/conf/agent/agent.conf"]
+    volumes:
+      - ${LAPTOP_DIR:?}/agent.conf:/opt/spire/conf/agent/agent.conf:ro
+      - ${LAPTOP_DIR:?}/agent.key:/opt/spire/conf/agent/agent.key:ro
+      - ${LAPTOP_DIR:?}/agent.pem:/opt/spire/conf/agent/agent.pem:ro
+      - ${LAPTOP_DIR:?}/bundle.pem:/opt/spire/conf/agent/bundle.pem:ro
+    networks: [default, workspace]
+
+  multica-daemon:
+    environment:
+      MULTICA_SERVER_URL: http://multica-api:8080
+      MULTICA_APP_URL: http://localhost:3000
+      MULTICA_DAEMON_ID: ${LAPTOP_NAME:?}
+      MULTICA_DAEMON_DEVICE_NAME: ${LAPTOP_NAME:?}
+      # Every run goes through the run wrapper to the launcher (D14). The daemon
+      # has no Claude token and no Docker access.
+      CLAUDEBOX_CLAUDE_PATH: /usr/local/bin/claudebox-run
+      CLAUDE_CODE_OAUTH_TOKEN: ""
+      # Runs can write to work folders that the daemon later runs git in. These
+      # pins (stronger than a repository's own config) stop the two usual ways a
+      # planted .git config runs a command. Other ways remain: see claudebox's
+      # ARCHITECTURE.md, Known gaps.
+      GIT_CONFIG_COUNT: "2"
+      GIT_CONFIG_KEY_0: core.fsmonitor
+      GIT_CONFIG_VALUE_0: "false"
+      GIT_CONFIG_KEY_1: core.hooksPath
+      GIT_CONFIG_VALUE_1: /dev/null
+    # Only what the daemon needs: none of the sponsor's ~/.claude, no shared
+    # Claude config, no SPIRE socket. Its ~/.claude (a volume in the image) and
+    # OpenAPPA files are its own; runs install OpenAPPA's policy from the image.
+    volumes: !override
+      - daemon-claude:/home/claude/.claude
+      - multica-state:/home/claude/.multica
+      - multica-workspaces:/home/claude/multica-workspaces
+      - appa-config:/home/claude/.config/appa
+      - appa-data-daemon:/home/claude/.local/share/appa
+      - launcher-socket:/run/launcher
+    networks: [default, workspace]
+
+  # The launcher: the only container with Docker access (ARCHITECTURE.md 5.7).
+  # It asks the broker before every run (D50) and starts each run in a fresh
+  # ClaudeBox container with the agent's label, its own session volume and only
+  # the task's work folder.
+  launcher:
+    image: workspace/claudebox-launcher:local
+    build:
+      context: ./launcher
+    profiles: ["multica"]
+    environment:
+      LAUNCHER_LAPTOP: ${LAPTOP_NAME:?}
+      LAUNCHER_PROJECT: ${COMPOSE_PROJECT_NAME:?}
+      LAUNCHER_IMAGE: ${LAUNCHER_IMAGE:?}
+      # Runs reach only the workspace's edge: the broker and the Multica API.
+      LAUNCHER_NETWORKS: workspace-edge
+      LAUNCHER_BROKER_URL: http://broker:8443
+      # The sponsor's Team seat token stays on the laptop (D15).
+      CLAUDE_CODE_OAUTH_TOKEN: ${CLAUDE_CODE_OAUTH_TOKEN:-}
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - launcher-socket:/run/launcher
+      - spire-agent-socket:/run/spire/sockets:ro
+    networks: [default, workspace]
+    restart: unless-stopped
+
+volumes:
+  daemon-claude:
+  launcher-socket:
+
+networks:
+  # The workspace's edge (local/docker-compose.yml), not its private network.
+  workspace:
+    name: workspace-edge
+    external: true

@@ -1,0 +1,9 @@
+# Generated release notes. A PR that changes the workflow vocabulary (checks,
+# actions, schemas, context fields) carries the `vocabulary` label, so the
+# person bumping a repo's .multica/engine sees it under its own heading.
+changelog:
+  categories:
+    - title: Workflow vocabulary
+      labels: [vocabulary]
+    - title: Other changes
+      labels: ["*"]

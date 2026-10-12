@@ -1,0 +1,72 @@
+# planning.yaml — approved PRD → spec → sequenced task backlog.
+# Runs AFTER prd.yaml. Analysis and its adversarial challenge now live in
+# phase 0 (prd.yaml), so planning starts from the APPROVED PRD and does the
+# breakdown only.
+#
+# Roles resolve via roles.yaml. Delimiter '-'.
+
+type: planning
+owner: staged-parent               # MUST have an agent/squad assignee or the barrier fires into the void
+description: >
+  Turns the approved PRD into a technical spec and a sequenced, tracer-bullet
+  task backlog the orchestrator can route.
+
+entry_criteria:
+  - prd_approved                   # docs/prd/<name>.md exists AND cleared prd.yaml's human sign-off
+
+stages:
+  - id: spec
+    role: planner                  # planner / Planning — to-spec: technical spec from the PRD
+    produces: spec
+    gate: { artifact_present: spec }
+
+  - id: breakdown
+    role: planner                  # to-tickets / wayfinder — tracer-bullet tickets with blocking edges
+    produces: task_breakdown
+    # predicate, not artifact_present: this stage's whole job is producing
+    # child tickets, and a real structural check for that already exists
+    # (tasks_created/tickets_created -> children() count, same as dispatch's
+    # own gate one stage later) — no reason to fall back to "a comment got
+    # posted and didn't look like a failure" when we can just verify the
+    # thing directly. Confirmed live (2026-07-22, PROJ-58): the heuristic
+    # let a breakdown run through with a comment but ZERO child tickets
+    # created, and the ticket advanced straight to a human-approval gate
+    # for a plan that didn't exist yet.
+    gate: { predicate: tickets_created }
+
+  - id: approve_plan
+    role: human                    # planning is agent-run, human-approved. Lighter than the PRD sign-off,
+    # default: "Pending" — same fresh-ticket property-attachment fix as
+    # prd-approve (PROJ-169, 2026-07-25); see prd.yaml's gate comment.
+    gate: { property: "Plan Approval", equals: "Approved", default: "Pending" }   # tracked the same way prd-approve tracks
+                                    # "PRD Approval" — a clean UI element instead of parsing a comment for
+                                    # the word "approved". "Changes Requested" mirrors PRD Approval's own
+                                    # escape hatch; see humanGateExpectationMessage()'s property branch for
+                                    # the exact same known limitation this shares with prd-approve (setting
+                                    # anything other than Approved does not yet auto-re-dispatch back a stage).
+
+  # Librarian — 2026-07-25: same rationale as prd.yaml's prd-document; runs
+  # from the APPROVED plan (spec + ticket breakdown), documenting the
+  # approach/decisions/sequencing so the plan's reasoning survives past the
+  # tickets themselves. See instructions/librarian.md.
+  - id: document
+    role: librarian                # librarian / Documentation — to-wiki: ingest the approved plan into docs/wiki/
+    produces: wiki_plan_summary
+    gate: { artifact_present: wiki_plan_summary }
+
+  - id: approve_wiki
+    role: human
+    # Separate from Plan Approval/"PR" for the same reason prd-wiki-approve
+    # is separate from PRD Approval/"PR" — see prd.yaml's comment.
+    gate: { property: "Plan Wiki Approval", equals: "Approved", default: "Pending" }
+
+  - id: dispatch
+    role: orchestrator             # orchestrator promotes tasks from backlog and routes each into feature.yaml
+    produces: routed_tasks
+    gate: { predicate: tasks_created }
+
+escalation: { timeout_stage: 45m, notify: human }
+
+# NOTE: the advocate no longer runs here — its adversarial pass is the full
+# red-team on the PRD in phase 0. If a breakdown ever needs its own challenge,
+# add a `challenge_breakdown` stage (role: advocate) before approve_plan.

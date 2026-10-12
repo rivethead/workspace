@@ -1,0 +1,21 @@
+name: docs
+
+# The workspace documents: no hard-wrapped markdown, and every link between
+# them reaches a file and a heading that exist.
+
+on:
+  pull_request:
+    paths: ["ARCHITECTURE.md", "README.md", "CLAUDE.md", "docs/**", "scripts/check_docs.py", ".claude/hooks/no-hard-wrap.py", ".github/workflows/docs.yml"]
+  push:
+    branches: [main]
+    paths: ["ARCHITECTURE.md", "README.md", "CLAUDE.md", "docs/**", "scripts/check_docs.py", ".claude/hooks/no-hard-wrap.py", ".github/workflows/docs.yml"]
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: python3 scripts/check_docs.py

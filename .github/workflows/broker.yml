@@ -1,0 +1,42 @@
+name: broker
+
+# The credential broker (broker/): vet, test (with a Postgres for the stop
+# switch) and build. People make its releases by hand (docs/plan.md, D48).
+
+on:
+  pull_request:
+    paths: ["broker/**", ".github/workflows/broker.yml"]
+  push:
+    branches: [main]
+    paths: ["broker/**", ".github/workflows/broker.yml"]
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    working-directory: broker
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_USER: broker
+          POSTGRES_PASSWORD: broker
+          POSTGRES_DB: broker
+        ports: ["5432:5432"]
+        options: --health-cmd "pg_isready -U broker" --health-interval 5s --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: broker/go.mod
+      - run: test -z "$(gofmt -l .)" || { gofmt -l .; exit 1; }
+      - run: go vet ./...
+      - run: go test -race ./...
+        env:
+          BROKER_TEST_DATABASE_URL: postgres://broker:broker@localhost:5432/broker?sslmode=disable
+      - run: go build ./...
